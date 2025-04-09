@@ -1,0 +1,4 @@
+tipo_cargador,potencia_kW,cantidad,queue_limit,pay_time_min,pay_time_max
+100kW,100,1,1,,
+350kW,350,1,1,,
+pago,0,1,,5,10

@@ -1,0 +1,4 @@
+tipo_coche,probabilidad,bateria_media,bateria_desviacion
+120kWh,0.2,0.6,0.2
+70kWh,0.3,0.6,0.2
+40kWh,0.5,0.6,0.2
