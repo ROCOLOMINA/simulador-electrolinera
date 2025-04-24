@@ -260,7 +260,7 @@ def run_simulation_from_dfs(config_df, car_types_df, params_df, inter_arrival_df
             "Tiempo máximo en cola de pago (min)": max(electrolinera.payment_queue_times, default=0),
             "Longitud promedio de la cola": (np.mean(electrolinera.queue_lengths) if electrolinera.queue_lengths else 0),
             "Longitud máxima de la cola": max(electrolinera.queue_lengths, default=0),
-            **car_type_counts
+            **car_type_counts,
             "Tiempo medio de espera por coche (min)": np.mean(electrolinera.wait_times) if electrolinera.wait_times else 0,
             "Porcentaje de coches que esperan": 100 * sum(1 for t in electrolinera.wait_times if t > 0) / len(electrolinera.wait_times) if electrolinera.wait_times else 0,
             "Tiempo medio de carga (min)": np.mean(electrolinera.charging_times) if electrolinera.charging_times else 0,
