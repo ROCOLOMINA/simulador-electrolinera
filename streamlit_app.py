@@ -97,6 +97,10 @@ class Electrolinera:
         self.PAY_TIME_DISTRIBUTION = PAY_TIME_DISTRIBUTION
         self.CAR_TYPES = CAR_TYPES
         self.stations = []
+        self.wait_times = []  # Para calcular el tiempo medio de espera
+        self.charging_times = []  # Para el tiempo medio de carga
+        self.energy_delivered = {charger["type"]: 0 for charger in self.stations}  # Energía entregada por tipo
+
         # Crear los cargadores
         for charger_type, config in CHARGERS.items():
             for _ in range(config["count"]):
@@ -257,6 +261,14 @@ def run_simulation_from_dfs(config_df, car_types_df, params_df, inter_arrival_df
             "Longitud promedio de la cola": (np.mean(electrolinera.queue_lengths) if electrolinera.queue_lengths else 0),
             "Longitud máxima de la cola": max(electrolinera.queue_lengths, default=0),
             **car_type_counts
+            "Tiempo medio de espera por coche (min)": np.mean(electrolinera.wait_times) if electrolinera.wait_times else 0,
+            "Porcentaje de coches que esperan": 100 * sum(1 for t in electrolinera.wait_times if t > 0) / len(electrolinera.wait_times) if electrolinera.wait_times else 0,
+            "Tiempo medio de carga (min)": np.mean(electrolinera.charging_times) if electrolinera.charging_times else 0,
+            "Tasa ocupación cargadores (%)": 100 * sum(electrolinera.charging_times) / (len(electrolinera.stations) * SIM_TIME) if electrolinera.charging_times else 0,
+            "Carga media por cargador por hora (kWh)": sum(electrolinera.energy_delivered.values()) / (len(electrolinera.stations) * SIM_TIME / 60) if electrolinera.stations else 0,
+            "Coches por día": stats["served"] / (SIM_TIME / (60 * 24)),
+            **{f"Energía total {k} (kWh)": v for k, v in electrolinera.energy_delivered.items()},
+
         }
 
     results = []
