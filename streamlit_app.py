@@ -468,20 +468,8 @@ def main():
         summary_df = results_df.mean().to_frame(name="Promedio").round(2)
         st.table(summary_df)
 
-        # 3) Gráficos simples (ejemplo: ocupación de cargadores)
-        st.subheader("Distribución de ocupaciones")
-        import altair as alt
-        chart = (
-            alt.Chart(results_df.reset_index())
-            .mark_bar()
-            .encode(
-                  x=alt.X("index:N", title="Réplica"),
-                y=alt.Y("Ocupación media cargadores (%)", title="Ocupación (%)")
-             )
-        )
-        st.altair_chart(chart, use_container_width=True)
 
-        # 4) Botón de descarga de CSV con todos los datos
+        # 3) Botón de descarga de CSV con todos los datos
         csv_result = results_df.to_csv(index=False)
         st.download_button(
             label="Descargar resultados completos",
@@ -493,3 +481,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
