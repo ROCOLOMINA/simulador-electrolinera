@@ -49,6 +49,7 @@ def parse_configuration_df(config_df):
 
     return chargers, num_payment_terminals, pay_time_min, pay_time_max, pay_time_distribution
 
+
 def parse_car_types_df(car_types_df):
     """
     A partir de un DataFrame con columnas:
@@ -65,6 +66,7 @@ def parse_car_types_df(car_types_df):
         }
     return car_types
 
+
 def parse_simulation_params_df(params_df):
     """
     A partir de un DataFrame con columnas:
@@ -74,6 +76,7 @@ def parse_simulation_params_df(params_df):
     sim_time = int(params_df.loc[0, "tiempo_simulacion_min"])
     num_reps = int(params_df.loc[0, "numero_replicaciones"])
     return sim_time, num_reps
+
 
 def parse_inter_arrival_df(inter_arrival_df):
     """
@@ -97,10 +100,6 @@ class Electrolinera:
         self.PAY_TIME_DISTRIBUTION = PAY_TIME_DISTRIBUTION
         self.CAR_TYPES = CAR_TYPES
         self.stations = []
-        self.wait_times = []  # Para calcular el tiempo medio de espera
-        self.charging_times = []  # Para el tiempo medio de carga
-        self.energy_delivered = {charger["type"]: 0 for charger in self.stations}  # Energía entregada por tipo
-
         # Crear los cargadores
         for charger_type, config in CHARGERS.items():
             for _ in range(config["count"]):
@@ -122,7 +121,6 @@ class Electrolinera:
         Calcula el tiempo de carga con distribución normal:
           tiempo_carga (min) = frac_carga * (capacidad_coche / potencia_cargador) * 60
         """
-        # Se asume que car_type es una cadena como "50 kWh"; extraer la capacidad numérica:
         car_capacity = float(car_type[:-3])
         charger_power = station["power"]
         media = frac_carga * (car_capacity / charger_power) * 60
@@ -136,7 +134,7 @@ class Electrolinera:
         """
         if self.PAY_TIME_DISTRIBUTION == "normal":
             mean = (self.PAY_TIME_MIN + self.PAY_TIME_MAX) / 2
-            std = (self.PAY_TIME_MAX - self.PAY_TIME_MIN) / 6  # Aproximadamente 99.7% de los datos en ±3σ
+            std = (self.PAY_TIME_MAX - self.PAY_TIME_MIN) / 6
             pay_time = max(1, np.random.normal(loc=mean, scale=std))
         elif self.PAY_TIME_DISTRIBUTION == "exponencial":
             scale = (self.PAY_TIME_MIN + self.PAY_TIME_MAX) / 2
@@ -150,20 +148,12 @@ class Electrolinera:
 # ------------------------------------------------------------------------------------
 
 def get_inter_arrival_time(current_time, inter_arrival_df, MONTHS):
-    """
-    Devuelve el tiempo medio de llegada en minutos, según la fecha (mes, día de la semana).
-    """
     month = MONTHS[current_time.month - 1]
-    weekday = current_time.weekday()  # 0=lunes, 6=domingo
+    weekday = current_time.weekday()
     return inter_arrival_df.loc[weekday, month]
 
+
 def car(env, name, electrolinera, stats):
-    """
-    Proceso de cada coche:
-      - Selecciona el tipo de coche según probabilidades.
-      - Calcula la fracción de batería a cargar.
-      - Hace cola en un cargador, luego en el terminal de pago.
-    """
     arrival_time = env.now
     queue_length = sum(len(station["resource"].queue) for station in electrolinera.stations)
     electrolinera.queue_lengths.append(queue_length)
@@ -207,10 +197,8 @@ def car(env, name, electrolinera, stats):
     stats["served"] += 1
     stats["system_times"].append(env.now - arrival_time)
 
+
 def car_generator(env, electrolinera, stats, inter_arrival_df, MONTHS, SIM_TIME):
-    """
-    Genera coches de forma continua durante el tiempo de simulación.
-    """
     i = 0
     current_time = datetime(2024, 1, 1)
     while True:
@@ -220,11 +208,8 @@ def car_generator(env, electrolinera, stats, inter_arrival_df, MONTHS, SIM_TIME)
         current_time += timedelta(minutes=inter_arrival_time)
         i += 1
 
+
 def run_simulation_from_dfs(config_df, car_types_df, params_df, inter_arrival_df):
-    """
-    Función principal que toma los DataFrames (o CSV subidos por el usuario),
-    ejecuta la simulación y devuelve un DataFrame con los resultados.
-    """
     CHARGERS, num_payment_terminals, PAY_TIME_MIN, PAY_TIME_MAX, PAY_TIME_DISTRIBUTION = parse_configuration_df(config_df)
     CAR_TYPES = parse_car_types_df(car_types_df)
     SIM_TIME, NUM_REPLICATIONS = parse_simulation_params_df(params_df)
@@ -246,30 +231,57 @@ def run_simulation_from_dfs(config_df, car_types_df, params_df, inter_arrival_df
         stats = {"served": 0, "abandoned": 0, "system_times": []}
         env.process(car_generator(env, electrolinera, stats, inter_arrival_parsed, MONTHS, SIM_TIME))
         env.run(until=SIM_TIME)
-        car_type_counts = {key: electrolinera.CAR_TYPES[key]["count"] for key in electrolinera.CAR_TYPES}
 
-        return {
+        # Cálculo de métricas base
+        car_type_counts = {key: electrolinera.CAR_TYPES[key]["count"] for key in electrolinera.CAR_TYPES}
+        results = {
             "Coches atendidos": stats["served"],
             "Coches abandonados": stats["abandoned"],
             "Tasa de abandono (%)": (stats["abandoned"] / (stats["served"] + stats["abandoned"]) * 100) if (stats["served"] + stats["abandoned"]) > 0 else 0,
             "Tiempo promedio en el sistema (min)": np.mean(stats["system_times"]) if stats["system_times"] else 0,
             "Tiempo máximo en el sistema (min)": max(stats["system_times"], default=0),
+            "Tiempo mínimo en el sistema (min)": min(stats["system_times"], default=0),
             "Tiempo promedio en cola de cargadores (min)": (np.mean(electrolinera.charger_queue_times) if electrolinera.charger_queue_times else 0),
             "Tiempo máximo en cola de cargadores (min)": max(electrolinera.charger_queue_times, default=0),
+            "Tiempo mínimo en cola de cargadores (min)": min(electrolinera.charger_queue_times, default=0),
             "Tiempo promedio en cola de pago (min)": (np.mean(electrolinera.payment_queue_times) if electrolinera.payment_queue_times else 0),
             "Tiempo máximo en cola de pago (min)": max(electrolinera.payment_queue_times, default=0),
+            "Tiempo mínimo en cola de pago (min)": min(electrolinera.payment_queue_times, default=0),
             "Longitud promedio de la cola": (np.mean(electrolinera.queue_lengths) if electrolinera.queue_lengths else 0),
-            "Longitud máxima de la cola": max(electrolinera.queue_lengths, default=0),
-            **car_type_counts,
-            "Tiempo medio de espera por coche (min)": np.mean(electrolinera.wait_times) if electrolinera.wait_times else 0,
-            "Porcentaje de coches que esperan": 100 * sum(1 for t in electrolinera.wait_times if t > 0) / len(electrolinera.wait_times) if electrolinera.wait_times else 0,
-            "Tiempo medio de carga (min)": np.mean(electrolinera.charging_times) if electrolinera.charging_times else 0,
-            "Tasa ocupación cargadores (%)": 100 * sum(electrolinera.charging_times) / (len(electrolinera.stations) * SIM_TIME) if electrolinera.charging_times else 0,
-            "Carga media por cargador por hora (kWh)": sum(electrolinera.energy_delivered.values()) / (len(electrolinera.stations) * SIM_TIME / 60) if electrolinera.stations else 0,
-            "Coches por día": stats["served"] / (SIM_TIME / (60 * 24)),
-            **{f"Energía total {k} (kWh)": v for k, v in electrolinera.energy_delivered.items()},
-
+            "Longitud máxima de la cola": max(electrolinera.queue_lengths, default=0)
         }
+        # Métricas adicionales solicitadas
+        total_charger_wait = np.array(electrolinera.charger_queue_times)
+        total_payment_wait = np.array(electrolinera.payment_queue_times)
+        waits = total_charger_wait + total_payment_wait
+        served = stats["served"]
+        # Tiempo medio de espera por coche
+        results["Tiempo medio de espera por coche (min)"] = np.mean(waits) if waits.size > 0 else 0
+        # Porcentaje de coches que tienen que esperar
+        results["Porcentaje de coches que esperan (%)"] = (np.sum(total_charger_wait > 0) / served * 100) if served > 0 else 0
+        # Tasa de ocupación de los cargadores
+        total_busy = sum(s["busy_time"] for s in electrolinera.stations)
+        num_chargers = len(electrolinera.stations)
+        results["Tasa de ocupación cargadores (%)"] = (total_busy / (num_chargers * SIM_TIME) * 100) if num_chargers > 0 else 0
+        # Tiempo medio de carga
+        results["Tiempo medio de carga (min)"] = np.mean(electrolinera.charging_times) if electrolinera.charging_times else 0
+        # Carga media suministrada por cargador por hora
+        total_energy = sum(s["energy_delivered"] for s in electrolinera.stations)
+        hours = SIM_TIME / 60
+        results["Carga media suministrada por cargador por hora (kWh/h)"] = (total_energy / num_chargers / hours) if num_chargers > 0 and hours > 0 else 0
+        # Número de coches atendidos por día
+        days = SIM_TIME / 1440
+        results["Coches atendidos por día"] = served / days if days > 0 else 0
+        # Energía total suministrada por tipo de cargador
+        energy_by_type = {}
+        for s in electrolinera.stations:
+            energy_by_type.setdefault(s["type"], 0)
+            energy_by_type[s["type"]] += s["energy_delivered"]
+        for tipo, energia in energy_by_type.items():
+            results[f"Energía total suministrada {tipo} (kWh)"] = energia
+        # Añadir conteo por tipo de coche
+        results.update(car_type_counts)
+        return results
 
     results = []
     for rep in range(NUM_REPLICATIONS):
