@@ -12,42 +12,31 @@ from datetime import datetime, timedelta
 def parse_configuration_df(config_df):
     """
     A partir de un DataFrame con columnas:
-      tipo_cargador, potencia_kW, cantidad, queue_limit (opcional),
-      pay_time_min, pay_time_max, pay_time_distribution (opcional)
+      tipo_cargador, potencia_kW, cantidad, queue_limit (opcional)
     Devuelve:
-      CHARGERS (dict), num_payment_terminals (int), PAY_TIME_MIN (float), PAY_TIME_MAX (float),
-      PAY_TIME_DISTRIBUTION (str)
+      CHARGERS (dict)
     """
     chargers = {}
-    num_payment_terminals = 0
-    pay_time_min = 5
-    pay_time_max = 10
-    pay_time_distribution = "uniforme"
 
     for _, row in config_df.iterrows():
-        tipo = str(row["tipo_cargador"]).lower()
+        tipo = row["tipo_cargador"]
         potencia = float(row["potencia_kW"])
         cantidad = int(row["cantidad"])
+
+        # extraemos queue_limit solo si existe y no es NaN
         queue_limit = None
-        if "queue_limit" in config_df.columns and not pd.isna(row.get("queue_limit")):
+        if "queue_limit" in config_df.columns and not pd.isna(row["queue_limit"]):
             queue_limit = int(row["queue_limit"])
 
-        if tipo == "pago":
-            num_payment_terminals = cantidad
-            if "pay_time_min" in config_df.columns and not pd.isna(row.get("pay_time_min")):
-                pay_time_min = float(row["pay_time_min"])
-            if "pay_time_max" in config_df.columns and not pd.isna(row.get("pay_time_max")):
-                pay_time_max = float(row["pay_time_max"])
-            if "pay_time_distribution" in config_df.columns and not pd.isna(row.get("pay_time_distribution")):
-                pay_time_distribution = row["pay_time_distribution"].strip().lower()
-        else:
-            chargers[row["tipo_cargador"]] = {
-                "count": cantidad,
-                "power": potencia,
-                "queue_limit": queue_limit
-            }
+        # añadimos directamente
+        chargers[tipo] = {
+            "count": cantidad,
+            "power": potencia,
+            "queue_limit": queue_limit
+        }
 
-    return chargers, num_payment_terminals, pay_time_min, pay_time_max, pay_time_distribution
+    return chargers
+
 
 def parse_car_types_df(car_types_df):
     """
@@ -88,13 +77,9 @@ def parse_inter_arrival_df(inter_arrival_df):
 # ------------------------------------------------------------------------------------
 
 class Electrolinera:
-    def __init__(self, env, CHARGERS, num_payment_terminals, PAY_TIME_MIN, PAY_TIME_MAX, PAY_TIME_DISTRIBUTION, CAR_TYPES):
+    def __init__(self, env, CHARGERS, CAR_TYPES):
         self.env = env
         self.CHARGERS = CHARGERS
-        self.num_payment_terminals = num_payment_terminals
-        self.PAY_TIME_MIN = PAY_TIME_MIN
-        self.PAY_TIME_MAX = PAY_TIME_MAX
-        self.PAY_TIME_DISTRIBUTION = PAY_TIME_DISTRIBUTION
         self.CAR_TYPES = CAR_TYPES
 
         # Estadísticas nuevas
@@ -117,11 +102,9 @@ class Electrolinera:
                     "queue_limit": config["queue_limit"],
                     "busy_time": 0.0
                 })
-        # Crear los terminales de pago
-        self.payment_terminal = simpy.Resource(env, capacity=self.num_payment_terminals)
+
         # Variables para estadísticas
         self.charger_queue_times = []
-        self.payment_queue_times = []
         self.queue_lengths = []
 
     def charge(self, car, station, car_type, frac_carga):
@@ -140,21 +123,6 @@ class Electrolinera:
         return charging_time, energy_delivered
 
 
-    def pay(self, car):
-        """
-        Tiempo de pago según la distribución configurada.
-        """
-        if self.PAY_TIME_DISTRIBUTION == "normal":
-            mean = (self.PAY_TIME_MIN + self.PAY_TIME_MAX) / 2
-            std = (self.PAY_TIME_MAX - self.PAY_TIME_MIN) / 6  # Aproximadamente 99.7% de los datos en ±3σ
-            pay_time = max(1, np.random.normal(loc=mean, scale=std))
-        elif self.PAY_TIME_DISTRIBUTION == "exponencial":
-            scale = (self.PAY_TIME_MIN + self.PAY_TIME_MAX) / 2
-            pay_time = max(1, np.random.exponential(scale=scale))
-        else:
-            pay_time = random.uniform(self.PAY_TIME_MIN, self.PAY_TIME_MAX)
-        yield self.env.timeout(pay_time)
-
 # ------------------------------------------------------------------------------------
 # 3. Funciones de llegada de coches y simulación con SimPy
 # ------------------------------------------------------------------------------------
@@ -172,7 +140,7 @@ def car(env, name, electrolinera, stats):
     Proceso de cada coche:
       - Selecciona el tipo de coche según probabilidades.
       - Calcula la fracción de batería a cargar.
-      - Hace cola en un cargador, luego en el terminal de pago.
+      - Hace cola en un cargador y se va al terminar la carga.
     """
     arrival_time = env.now
     queue_length = sum(len(station["resource"].queue) for station in electrolinera.stations)
@@ -225,15 +193,9 @@ def car(env, name, electrolinera, stats):
         electrolinera.energy_by_type[station["type"]] += energy
 
 
-    with electrolinera.payment_terminal.request() as pay_request:
-        payment_queue_start = env.now
-        yield pay_request
-        payment_queue_time = env.now - payment_queue_start
-        electrolinera.payment_queue_times.append(payment_queue_time)
-        yield env.process(electrolinera.pay(name))
-
+    # Al terminar la carga, damos el coche por servido y registramos su tiempo total
     stats["served"] += 1
-    stats["system_times"].append(env.now - arrival_time)
+    stats["system_times"].append(charge_end - arrival_time)
 
 def car_generator(env, electrolinera, stats, inter_arrival_df, MONTHS, SIM_TIME):
     """
@@ -248,12 +210,13 @@ def car_generator(env, electrolinera, stats, inter_arrival_df, MONTHS, SIM_TIME)
         current_time += timedelta(minutes=inter_arrival_time)
         i += 1
 
-def run_simulation_from_dfs(config_df, car_types_df, params_df, inter_arrival_df):
+def run_simulation_from_dfs(config_df, car_types_df, params_df, inter_arrival_df, econ_params_df):
+
     """
     Función principal que toma los DataFrames (o CSV subidos por el usuario),
     ejecuta la simulación y devuelve un DataFrame con los resultados.
     """
-    CHARGERS, num_payment_terminals, PAY_TIME_MIN, PAY_TIME_MAX, PAY_TIME_DISTRIBUTION = parse_configuration_df(config_df)
+    CHARGERS = parse_configuration_df(config_df)
     CAR_TYPES = parse_car_types_df(car_types_df)
     SIM_TIME, NUM_REPLICATIONS = parse_simulation_params_df(params_df)
     inter_arrival_parsed, MONTHS = parse_inter_arrival_df(inter_arrival_df)
@@ -263,15 +226,28 @@ def run_simulation_from_dfs(config_df, car_types_df, params_df, inter_arrival_df
         random.seed(42 + replication)
         np.random.seed(42 + replication)
 
+        # — SUPUESTOS ECONÓMICOS —
+        economics = dict(zip(econ_params_df["variable"], econ_params_df["valor"]))
+
+        precio_venta = float(economics["precio_venta"])
+        precio_compra = float(economics["precio_compra"])
+        coste_mantenimiento_pct = float(economics["coste_mantenimiento_pct"])
+        vida_util_cargador = float(economics["vida_util_cargador"])
+        coste_explotacion_anual = float(economics["coste_explotacion_anual"])
+        coste_fijo = float(economics["coste_fijo"])
+        coste_variable = float(economics["coste_variable"])
+
+        # Fórmula de coste de cargador en función de su potencia
+        def calcular_coste_cargador(potencia_kW):
+            return coste_fijo + coste_variable * potencia_kW
+
+
+
         # Crear entorno y electrolinera
         env = simpy.Environment()
         electrolinera = Electrolinera(
             env,
             CHARGERS,
-            num_payment_terminals,
-            PAY_TIME_MIN,
-            PAY_TIME_MAX,
-            PAY_TIME_DISTRIBUTION,
             CAR_TYPES
         )
 
@@ -319,6 +295,42 @@ def run_simulation_from_dfs(config_df, car_types_df, params_df, inter_arrival_df
         total_energy = sum(electrolinera.energy_by_type.values())
         energy_per_charger_per_hour = total_energy / num_chargers / sim_hours
 
+        # — ECONOMÍA SENCILLA —
+
+        # 1) Ingresos por venta de energía
+        ingresos = total_energy * precio_venta
+
+        # 2) Coste de electricidad comprada
+        coste_energia = total_energy * precio_compra
+
+        # 3) Coste de mantenimiento de todos los cargadores
+        coste_mantenimiento = sum(
+            cfg["count"] * calcular_coste_cargador(cfg["power"]) * coste_mantenimiento_pct
+            for cfg in CHARGERS.values()
+        )
+
+        # 4) Coste de amortización de cargadores
+        coste_amortizacion = sum(
+            cfg["count"] * calcular_coste_cargador(cfg["power"]) / vida_util_cargador
+            for cfg in CHARGERS.values()
+        )
+
+        # 5) Costes totales
+        costes_totales = coste_energia + coste_mantenimiento + coste_amortizacion + coste_explotacion_anual
+
+        # 6) Beneficio neto
+        beneficio_neto = ingresos - costes_totales
+
+        # 7) Inversión inicial (CAPEX)
+        inversion_inicial = sum(
+            cfg["count"] * calcular_coste_cargador(cfg["power"])
+            for cfg in CHARGERS.values()
+        )
+
+        # 8) Rentabilidad
+        rentabilidad = (beneficio_neto / inversion_inicial) * 100 if inversion_inicial > 0 else 0
+
+
         # 5) Coches atendidos por día
         cars_per_day = stats["served"] / days
 
@@ -342,12 +354,6 @@ def run_simulation_from_dfs(config_df, car_types_df, params_df, inter_arrival_df
             ),
             "Tiempo máximo en cola de cargadores (min)": max(electrolinera.charger_queue_times, default=0),
             "Tiempo mínimo en cola de cargadores (min)": min(electrolinera.charger_queue_times, default=0),
-            "Tiempo promedio en cola de pago (min)": (
-                np.mean(electrolinera.payment_queue_times)
-                if electrolinera.payment_queue_times else 0
-            ),
-            "Tiempo máximo en cola de pago (min)": max(electrolinera.payment_queue_times, default=0),
-            "Tiempo mínimo en cola de pago (min)": min(electrolinera.payment_queue_times, default=0),
             "Longitud promedio de la cola": (
                 np.mean(electrolinera.queue_lengths) if electrolinera.queue_lengths else 0
             ),
@@ -367,7 +373,14 @@ def run_simulation_from_dfs(config_df, car_types_df, params_df, inter_arrival_df
             **{
                 f"Energía total {ctype} (kWh)": energy
                 for ctype, energy in electrolinera.energy_by_type.items()
-            }
+            },
+
+            # Métricas economia
+            "Ingresos anuales (€)": ingresos,
+            "Costes anuales (€)": costes_totales,
+            "Beneficio neto anual (€)": beneficio_neto,
+            "Rentabilidad sobre inversión (%)": rentabilidad,
+
         }
 
 
@@ -393,13 +406,10 @@ def main():
     else:
         st.info("Usando configuración de ejemplo.")
         config_df = pd.DataFrame({
-            "tipo_cargador": ["100kW", "350kW", "pago"],
-            "potencia_kW": [100, 350, 0],
-            "cantidad": [1, 1, 1],
-            "queue_limit": [1, 1, None],
-            "pay_time_min": [None, None, 5],
-            "pay_time_max": [None, None, 10],
-            "pay_time_distribution": [None, None, "uniforme"]
+            "tipo_cargador": ["100kW", "350kW"],
+            "potencia_kW": [100, 350],
+            "cantidad": [1, 1],
+            "queue_limit": [1, 1],
         })
         st.dataframe(config_df)
 
@@ -454,9 +464,31 @@ def main():
         }, index=[0,1,2,3,4,5,6])
         st.dataframe(inter_arrival_df)
 
+    st.subheader("5) Supuestos Económicos")
+    econ_file = st.file_uploader("Sube 'parametros_economicos.csv'", type=["csv"])
+    if econ_file is not None:
+        econ_params_df = pd.read_csv(econ_file)
+        st.dataframe(econ_params_df)
+    else:
+        st.info("Usando supuestos económicos de ejemplo.")
+        econ_params_df = pd.DataFrame({
+            "variable": [
+                "precio_venta", "precio_compra", "coste_mantenimiento_pct",
+                "vida_util_cargador", "coste_explotacion_anual",
+                "coste_fijo", "coste_variable"
+            ],
+            "valor": [
+                0.5, 0.25, 0.07, 15, 50000,
+                20000, 300
+            ]
+        })
+    st.dataframe(econ_params_df)
+
+
+
     if st.button("Ejecutar Simulación"):
         st.write("Ejecutando simulación, por favor espera...")
-        results_df = run_simulation_from_dfs(config_df, car_types_df, params_df, inter_arrival_df)
+        results_df = run_simulation_from_dfs(config_df, car_types_df, params_df, inter_arrival_df, econ_params_df)
         st.success("Simulación finalizada.")
 
         # 1) DataFrame completo
@@ -481,4 +513,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
