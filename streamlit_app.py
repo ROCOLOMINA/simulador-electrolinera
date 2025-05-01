@@ -32,11 +32,11 @@ def parse_configuration_df(config_df):
         chargers[tipo] = {
             "count": cantidad,
             "power": potencia,
-            "queue_limit": queue_limit
+            "queue_limit": queue_limit,
+            "precio_venta": float(row["precio_venta"]) if "precio_venta" in config_df.columns else 0.5
         }
 
     return chargers
-
 
 def parse_car_types_df(car_types_df):
     """
@@ -122,7 +122,6 @@ class Electrolinera:
         yield self.env.timeout(charging_time)
         return charging_time, energy_delivered
 
-
 # ------------------------------------------------------------------------------------
 # 3. Funciones de llegada de coches y simulación con SimPy
 # ------------------------------------------------------------------------------------
@@ -135,7 +134,7 @@ def get_inter_arrival_time(current_time, inter_arrival_df, MONTHS):
     weekday = current_time.weekday()  # 0=lunes, 6=domingo
     return inter_arrival_df.loc[weekday, month]
 
-def car(env, name, electrolinera, stats):
+def car(env, name, electrolinera, stats, precio_dia_mes_df, energy_by_car_type, energy_by_weekday, energy_by_month):
     """
     Proceso de cada coche:
       - Selecciona el tipo de coche según probabilidades.
@@ -185,6 +184,17 @@ def car(env, name, electrolinera, stats):
         charging_time, energy = yield env.process(
             electrolinera.charge(name, station, car_type, frac_carga)
         )
+
+        fecha = datetime(2024, 1, 1) + timedelta(minutes=env.now)
+        mes_idx = fecha.month - 1           # 0 = Enero, 1 = Febrero, …
+        dia_semana = fecha.weekday()
+        precio    = precio_dia_mes_df.iloc[dia_semana, mes_idx]
+        stats["coste_energia"] += energy * precio
+        energy_by_weekday[dia_semana] += energy
+
+        # si tus claves van de 1 a 12:
+        energy_by_month[fecha.month] += energy
+
         charge_end = env.now
 
         # estadísticas de ocupación y energía
@@ -192,25 +202,46 @@ def car(env, name, electrolinera, stats):
         electrolinera.charging_times.append(charging_time)
         electrolinera.energy_by_type[station["type"]] += energy
 
-
     # Al terminar la carga, damos el coche por servido y registramos su tiempo total
     stats["served"] += 1
     stats["system_times"].append(charge_end - arrival_time)
 
-def car_generator(env, electrolinera, stats, inter_arrival_df, MONTHS, SIM_TIME):
+def car_generator(
+    env, electrolinera, stats,
+    inter_arrival_df, MONTHS,
+    SIM_TIME, precio_dia_mes_df,
+    energy_by_car_type, energy_by_weekday, energy_by_month
+):
     """
     Genera coches de forma continua durante el tiempo de simulación.
     """
     i = 0
     current_time = datetime(2024, 1, 1)
     while True:
-        inter_arrival_time = get_inter_arrival_time(current_time, inter_arrival_df, MONTHS)
-        yield env.timeout(random.expovariate(1 / inter_arrival_time))
-        env.process(car(env, f"Car {i}", electrolinera, stats))
-        current_time += timedelta(minutes=inter_arrival_time)
+        iti = get_inter_arrival_time(current_time, inter_arrival_df, MONTHS)
+        yield env.timeout(random.expovariate(1 / iti))
+
+        # lanzamos un proceso 'car'
+        env.process(
+            car(
+                env,
+                f"Car {i}",
+                electrolinera,
+                stats,
+                precio_dia_mes_df,
+                energy_by_car_type,
+                energy_by_weekday,
+                energy_by_month
+            )
+        )
+
+        current_time += timedelta(minutes=iti)
         i += 1
 
-def run_simulation_from_dfs(config_df, car_types_df, params_df, inter_arrival_df, econ_params_df):
+def run_simulation_from_dfs(
+    config_df, car_types_df, params_df,
+    inter_arrival_df, econ_params_df, precio_dia_mes_df
+):
 
     """
     Función principal que toma los DataFrames (o CSV subidos por el usuario),
@@ -229,7 +260,6 @@ def run_simulation_from_dfs(config_df, car_types_df, params_df, inter_arrival_df
         # — SUPUESTOS ECONÓMICOS —
         economics = dict(zip(econ_params_df["variable"], econ_params_df["valor"]))
 
-        precio_venta = float(economics["precio_venta"])
         precio_compra = float(economics["precio_compra"])
         coste_mantenimiento_pct = float(economics["coste_mantenimiento_pct"])
         vida_util_cargador = float(economics["vida_util_cargador"])
@@ -241,8 +271,6 @@ def run_simulation_from_dfs(config_df, car_types_df, params_df, inter_arrival_df
         def calcular_coste_cargador(potencia_kW):
             return coste_fijo + coste_variable * potencia_kW
 
-
-
         # Crear entorno y electrolinera
         env = simpy.Environment()
         electrolinera = Electrolinera(
@@ -251,11 +279,31 @@ def run_simulation_from_dfs(config_df, car_types_df, params_df, inter_arrival_df
             CAR_TYPES
         )
 
-        # Estadísticas básicas
-        stats = {"served": 0, "abandoned": 0, "system_times": []}
+        # Acumuladores detallados
+        energy_by_car_type = {tipo: 0.0 for tipo in CAR_TYPES}
+        energy_by_weekday = {i: 0.0 for i in range(7)}       # 0=Lunes, 6=Domingo
+        energy_by_month = {m: 0.0 for m in range(1, 13)}     # 1=Enero, ..., 12=Diciembre
 
-        # Lanzar el generador de coches
-        env.process(car_generator(env, electrolinera, stats, inter_arrival_parsed, MONTHS, SIM_TIME))
+        
+
+        # Estadísticas básicas
+        stats = {"served": 0, "abandoned": 0, "system_times": [], "coste_energia": 0.0}
+
+# Arrancamos el generador de llegadas
+        env.process(
+            car_generator(
+                env,
+                electrolinera,
+                stats,
+                inter_arrival_parsed,
+                MONTHS,
+                SIM_TIME,
+                precio_dia_mes_df,
+                energy_by_car_type,
+                energy_by_weekday,
+                energy_by_month
+            )
+        )
 
         # Ejecutar simulación
         env.run(until=SIM_TIME)
@@ -298,10 +346,14 @@ def run_simulation_from_dfs(config_df, car_types_df, params_df, inter_arrival_df
         # — ECONOMÍA SENCILLA —
 
         # 1) Ingresos por venta de energía
-        ingresos = total_energy * precio_venta
+        ingresos = sum(
+            electrolinera.energy_by_type[cargador] * CHARGERS[cargador]["precio_venta"]
+            for cargador in CHARGERS
+        )
 
         # 2) Coste de electricidad comprada
-        coste_energia = total_energy * precio_compra
+        coste_energia = stats["coste_energia"]
+        start_datetime = datetime(2024, 1, 1)  # inicio de la simulación
 
         # 3) Coste de mantenimiento de todos los cargadores
         coste_mantenimiento = sum(
@@ -329,7 +381,6 @@ def run_simulation_from_dfs(config_df, car_types_df, params_df, inter_arrival_df
 
         # 8) Rentabilidad
         rentabilidad = (beneficio_neto / inversion_inicial) * 100 if inversion_inicial > 0 else 0
-
 
         # 5) Coches atendidos por día
         cars_per_day = stats["served"] / days
@@ -381,8 +432,14 @@ def run_simulation_from_dfs(config_df, car_types_df, params_df, inter_arrival_df
             "Beneficio neto anual (€)": beneficio_neto,
             "Rentabilidad sobre inversión (%)": rentabilidad,
 
-        }
+            # Energía total por tipo de coche
+            **{f"Energía total coche {tipo} (kWh)": energia for tipo, energia in energy_by_car_type.items()},
+            # Energía total por día de la semana
+            **{f"Energía total día {i} (kWh)": energia for i, energia in energy_by_weekday.items()},
+            # Energía total por mes
+            **{f"Energía total mes {m} (kWh)": energia for m, energia in energy_by_month.items()},
 
+        }
 
     results = []
     for rep in range(NUM_REPLICATIONS):
@@ -410,6 +467,7 @@ def main():
             "potencia_kW": [100, 350],
             "cantidad": [1, 1],
             "queue_limit": [1, 1],
+            "precio_venta": [0.45,0.55]
         })
         st.dataframe(config_df)
 
@@ -473,22 +531,43 @@ def main():
         st.info("Usando supuestos económicos de ejemplo.")
         econ_params_df = pd.DataFrame({
             "variable": [
-                "precio_venta", "precio_compra", "coste_mantenimiento_pct",
+                "precio_compra", "coste_mantenimiento_pct",
                 "vida_util_cargador", "coste_explotacion_anual",
                 "coste_fijo", "coste_variable"
             ],
             "valor": [
-                0.5, 0.25, 0.07, 15, 50000,
+                0.25, 0.07, 15, 50000,
                 20000, 300
             ]
         })
     st.dataframe(econ_params_df)
 
-
+    st.subheader("6) Precio de compra por día y mes")
+    precio_dia_mes_file = st.file_uploader("Sube 'precio_compra_por_dia_y_mes.csv'", type=["csv"])
+    if precio_dia_mes_file is not None:
+        precio_dia_mes_df = pd.read_csv(precio_dia_mes_file, index_col=0)
+        st.dataframe(precio_dia_mes_df)
+    else:
+        st.info("Usando precios de compra por día y mes de ejemplo.")
+        precio_dia_mes_df = pd.DataFrame({
+            "January":   [0.145, 0.144, 0.148, 0.152, 0.222, 0.189, 0.123],
+            "February":  [0.158, 0.161, 0.175, 0.198, 0.219, 0.185, 0.134],
+            "March":     [0.179, 0.179, 0.184, 0.202, 0.221, 0.162, 0.141],
+            "April":     [0.201, 0.198, 0.195, 0.217, 0.214, 0.174, 0.162],
+            "May":       [0.223, 0.225, 0.224, 0.243, 0.236, 0.193, 0.179],
+            "June":      [0.181, 0.176, 0.185, 0.200, 0.199, 0.167, 0.158],
+            "July":      [0.164, 0.165, 0.167, 0.172, 0.176, 0.153, 0.144],
+            "August":    [0.142, 0.143, 0.145, 0.151, 0.157, 0.135, 0.124],
+            "September": [0.132, 0.133, 0.134, 0.137, 0.140, 0.124, 0.113],
+            "October":   [0.153, 0.155, 0.156, 0.159, 0.161, 0.135, 0.122],
+            "November":  [0.172, 0.174, 0.176, 0.179, 0.181, 0.153, 0.131],
+            "December":  [0.193, 0.195, 0.197, 0.199, 0.202, 0.174, 0.147]
+    }, index=[0, 1, 2, 3, 4, 5, 6])
+    st.dataframe(precio_dia_mes_df)
 
     if st.button("Ejecutar Simulación"):
         st.write("Ejecutando simulación, por favor espera...")
-        results_df = run_simulation_from_dfs(config_df, car_types_df, params_df, inter_arrival_df, econ_params_df)
+        results_df = run_simulation_from_dfs(config_df, car_types_df, params_df, inter_arrival_df, econ_params_df, precio_dia_mes_df)
         st.success("Simulación finalizada.")
 
         # 1) DataFrame completo
@@ -500,7 +579,6 @@ def main():
         summary_df = results_df.mean().to_frame(name="Promedio").round(2)
         st.table(summary_df)
 
-
         # 3) Botón de descarga de CSV con todos los datos
         csv_result = results_df.to_csv(index=False)
         st.download_button(
@@ -510,6 +588,7 @@ def main():
             mime="text/csv"
         )
 
-
 if __name__ == "__main__":
     main()
+
+
