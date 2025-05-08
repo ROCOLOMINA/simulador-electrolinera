@@ -185,7 +185,10 @@ def car(env, name, electrolinera, stats, precio_dia_mes_df, energy_by_car_type, 
             electrolinera.charge(name, station, car_type, frac_carga)
         )
 
-        fecha = datetime(2024, 1, 1) + timedelta(minutes=env.now)
+        energy_by_car_type[car_type] += energy
+
+
+        fecha = datetime(2030, 1, 1) + timedelta(minutes=env.now)
         mes_idx = fecha.month - 1           # 0 = Enero, 1 = Febrero, …
         dia_semana = fecha.weekday()
         precio    = precio_dia_mes_df.iloc[dia_semana, mes_idx]
@@ -385,6 +388,11 @@ def run_simulation_from_dfs(
         # 5) Coches atendidos por día
         cars_per_day = stats["served"] / days
 
+        dias_semana = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+        meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+                 "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+
+
         # — DEVOLUCIÓN DE TODAS LAS MÉTRICAS —
         return {
             # Métricas originales
@@ -434,10 +442,11 @@ def run_simulation_from_dfs(
 
             # Energía total por tipo de coche
             **{f"Energía total coche {tipo} (kWh)": energia for tipo, energia in energy_by_car_type.items()},
-            # Energía total por día de la semana
-            **{f"Energía total día {i} (kWh)": energia for i, energia in energy_by_weekday.items()},
-            # Energía total por mes
-            **{f"Energía total mes {m} (kWh)": energia for m, energia in energy_by_month.items()},
+            # Energía total por día de la semana (con nombres)
+            **{f"Energía total {dias_semana[i]} (kWh)": energia for i, energia in energy_by_weekday.items()},
+
+            # Energía total por mes (con nombres)
+            **{f"Energía total {meses[m - 1]} (kWh)": energia for m, energia in energy_by_month.items()},
 
         }
 
@@ -455,8 +464,8 @@ def main():
     st.title("Simulador de Electrolinera")
     st.write("Bienvenido/a a la aplicación de simulación. Sube tus CSV o utiliza los datos de ejemplo.")
 
-    st.subheader("1) Configuración de Cargadores")
-    config_file = st.file_uploader("Sube 'configuracion_cargadores.csv'", type=["csv"])
+    st.subheader("1) Configuración de Cargadores (precio en euros)")
+    config_file = st.file_uploader("Sube 'configuracion_cargadores.csv' ", type=["csv"])
     if config_file is not None:
         config_df = pd.read_csv(config_file)
         st.dataframe(config_df)
@@ -499,7 +508,7 @@ def main():
         })
         st.dataframe(params_df)
 
-    st.subheader("4) Tiempos de Llegada (inter_arrival_times.csv)")
+    st.subheader("4) Tiempos de Llegada (inter_arrival_times.csv) (minutos entre llegada de coches)")
     inter_file = st.file_uploader("Sube 'inter_arrival_times.csv'", type=["csv"])
     if inter_file is not None:
         inter_arrival_df = pd.read_csv(inter_file, index_col=0)
@@ -522,7 +531,7 @@ def main():
         }, index=[0,1,2,3,4,5,6])
         st.dataframe(inter_arrival_df)
 
-    st.subheader("5) Supuestos Económicos")
+    st.subheader("5) Supuestos Económicos (euros o años)")
     econ_file = st.file_uploader("Sube 'parametros_economicos.csv'", type=["csv"])
     if econ_file is not None:
         econ_params_df = pd.read_csv(econ_file)
@@ -542,7 +551,7 @@ def main():
         })
     st.dataframe(econ_params_df)
 
-    st.subheader("6) Precio de compra por día y mes")
+    st.subheader("6) Precio de compra por día y mes (€/kWh)")
     precio_dia_mes_file = st.file_uploader("Sube 'precio_compra_por_dia_y_mes.csv'", type=["csv"])
     if precio_dia_mes_file is not None:
         precio_dia_mes_df = pd.read_csv(precio_dia_mes_file, index_col=0)
@@ -590,5 +599,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
