@@ -6,6 +6,15 @@ import random
 from datetime import datetime, timedelta
 
 # ------------------------------------------------------------------------------------
+# Diccionarios de traducción para días y meses en español
+# ------------------------------------------------------------------------------------
+
+DIAS_SEMANA = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+MESES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+         "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+
+
+# ------------------------------------------------------------------------------------
 # 1. Funciones para "parsear" los DataFrames que sube el usuario
 # ------------------------------------------------------------------------------------
 
@@ -62,7 +71,8 @@ def parse_simulation_params_df(params_df):
     """
     sim_time = int(params_df.loc[0, "tiempo_simulacion_min"])
     num_reps = int(params_df.loc[0, "numero_replicaciones"])
-    return sim_time, num_reps
+    start_date = datetime.strptime(params_df.loc[0, "fecha_inicio_simulacion"], "%Y-%m-%d")
+    return sim_time, num_reps, start_date
 
 def parse_inter_arrival_df(inter_arrival_df):
     """
@@ -128,13 +138,13 @@ class Electrolinera:
 
 def get_inter_arrival_time(current_time, inter_arrival_df, MONTHS):
     """
-    Devuelve el tiempo medio de llegada en minutos, según la fecha (mes, día de la semana).
+    Devuelve el tiempo medio de llegada en minutos, según la fecha (mes y día de la semana).
     """
-    month = MONTHS[current_time.month - 1]
-    weekday = current_time.weekday()  # 0=lunes, 6=domingo
-    return inter_arrival_df.loc[weekday, month]
+    month = MESES[current_time.month - 1]                # Mes en español
+    weekday_name = DIAS_SEMANA[current_time.weekday()]   # Día en español
+    return inter_arrival_df.loc[weekday_name, month]
 
-def car(env, name, electrolinera, stats, precio_dia_mes_df, energy_by_car_type, energy_by_weekday, energy_by_month):
+def car(env, name, electrolinera, stats, precio_dia_mes_df, energy_by_car_type, energy_by_weekday, energy_by_month, start_datetime):
     """
     Proceso de cada coche:
       - Selecciona el tipo de coche según probabilidades.
@@ -188,12 +198,14 @@ def car(env, name, electrolinera, stats, precio_dia_mes_df, energy_by_car_type, 
         energy_by_car_type[car_type] += energy
 
 
-        fecha = datetime(2030, 1, 1) + timedelta(minutes=env.now)
-        mes_idx = fecha.month - 1           # 0 = Enero, 1 = Febrero, …
-        dia_semana = fecha.weekday()
-        precio    = precio_dia_mes_df.iloc[dia_semana, mes_idx]
+        fecha = start_datetime + timedelta(minutes=env.now)
+        mes_nombre = MESES[fecha.month - 1]              # "Enero", "Febrero", …
+        dia_nombre = DIAS_SEMANA[fecha.weekday()]        # "Lunes", "Martes", …
+
+        precio = precio_dia_mes_df.loc[dia_nombre, mes_nombre]
+
         stats["coste_energia"] += energy * precio
-        energy_by_weekday[dia_semana] += energy
+        energy_by_weekday[fecha.weekday()] += energy
 
         # si tus claves van de 1 a 12:
         energy_by_month[fecha.month] += energy
@@ -213,7 +225,7 @@ def car_generator(
     env, electrolinera, stats,
     inter_arrival_df, MONTHS,
     SIM_TIME, precio_dia_mes_df,
-    energy_by_car_type, energy_by_weekday, energy_by_month
+    energy_by_car_type, energy_by_weekday, energy_by_month, start_datetime
 ):
     """
     Genera coches de forma continua durante el tiempo de simulación.
@@ -234,7 +246,8 @@ def car_generator(
                 precio_dia_mes_df,
                 energy_by_car_type,
                 energy_by_weekday,
-                energy_by_month
+                energy_by_month,
+                start_datetime
             )
         )
 
@@ -252,7 +265,7 @@ def run_simulation_from_dfs(
     """
     CHARGERS = parse_configuration_df(config_df)
     CAR_TYPES = parse_car_types_df(car_types_df)
-    SIM_TIME, NUM_REPLICATIONS = parse_simulation_params_df(params_df)
+    SIM_TIME, NUM_REPLICATIONS, START_DATE = parse_simulation_params_df(params_df)
     inter_arrival_parsed, MONTHS = parse_inter_arrival_df(inter_arrival_df)
 
     def run_simulation(replication):
@@ -294,19 +307,21 @@ def run_simulation_from_dfs(
 
 # Arrancamos el generador de llegadas
         env.process(
-            car_generator(
-                env,
-                electrolinera,
-                stats,
-                inter_arrival_parsed,
-                MONTHS,
-                SIM_TIME,
-                precio_dia_mes_df,
-                energy_by_car_type,
-                energy_by_weekday,
-                energy_by_month
-            )
+        car_generator(
+            env,
+            electrolinera,
+            stats,
+            inter_arrival_parsed,
+            MONTHS,
+            SIM_TIME,
+            precio_dia_mes_df,
+            energy_by_car_type,
+            energy_by_weekday,
+            energy_by_month,
+            START_DATE  # nuevo argumento
         )
+    )
+
 
         # Ejecutar simulación
         env.run(until=SIM_TIME)
@@ -397,7 +412,7 @@ def run_simulation_from_dfs(
         return {
             # Métricas originales
             "Coches atendidos": stats["served"],
-            "Coches abandonados": stats["abandoned"],
+            "Coches que abandonan sin servicio": stats["abandoned"],
             "Tasa de abandono (%)": (
                 stats["abandoned"] / (stats["served"] + stats["abandoned"]) * 100
                 if (stats["served"] + stats["abandoned"]) > 0 else 0
@@ -504,31 +519,34 @@ def main():
         st.info("Usando parámetros de ejemplo.")
         params_df = pd.DataFrame({
             "tiempo_simulacion_min": [525600],
-            "numero_replicaciones": [1]
+            "numero_replicaciones": [1],
+            "fecha_inicio_simulacion": ["2030-01-01"]
         })
         st.dataframe(params_df)
 
-    st.subheader("4) Tiempos de Llegada (inter_arrival_times.csv) (minutos entre llegada de coches)")
-    inter_file = st.file_uploader("Sube 'inter_arrival_times.csv'", type=["csv"])
+    st.subheader("4) Tiempos de Llegada (tiempo_entre_llegadas.csv) (minutos entre llegada de coches)")
+    inter_file = st.file_uploader("Sube 'tiempo_entre_llegadas.csv'", type=["csv"])
+
     if inter_file is not None:
         inter_arrival_df = pd.read_csv(inter_file, index_col=0)
         st.dataframe(inter_arrival_df)
     else:
         st.info("Usando tiempos de llegada de ejemplo.")
         inter_arrival_df = pd.DataFrame({
-            'January': [10.015, 10.009, 9.925, 10.442, 7.793, 12.118, 14.094],
-            'February': [8.648, 9.637, 9.383, 8.274, 6.288, 10.572, 12.811],
-            'March': [10.657, 10.127, 10.110, 9.292, 6.941, 11.133, 13.279],
-            'April': [8.498, 8.365, 7.140, 6.828, 6.645, 10.373, 10.516],
-            'May': [9.786, 9.091, 9.034, 8.031, 5.786, 9.334, 11.812],
-            'June': [8.650, 8.987, 8.570, 7.637, 5.632, 8.884, 11.082],
-            'July': [8.067, 8.154, 8.086, 6.829, 5.302, 6.786, 9.329],
-            'August': [7.038, 7.992, 8.115, 7.495, 5.710, 7.907, 10.169],
-            'September': [9.417, 9.227, 9.118, 8.120, 6.035, 9.613, 11.541],
-            'October': [9.249, 9.180, 9.063, 8.385, 5.974, 8.763, 8.712],
-            'November': [9.562, 9.519, 9.508, 8.961, 6.735, 10.611, 11.845],
-            'December': [9.244, 9.089, 8.677, 8.355, 6.241, 9.412, 10.608]
-        }, index=[0,1,2,3,4,5,6])
+            'Enero':     [10.015, 10.009, 9.925, 10.442, 7.793, 12.118, 14.094],
+            'Febrero':   [8.648, 9.637, 9.383, 8.274, 6.288, 10.572, 12.811],
+            'Marzo':     [10.657, 10.127, 10.110, 9.292, 6.941, 11.133, 13.279],
+            'Abril':     [8.498, 8.365, 7.140, 6.828, 6.645, 10.373, 10.516],
+            'Mayo':      [9.786, 9.091, 9.034, 8.031, 5.786, 9.334, 11.812],
+            'Junio':     [8.650, 8.987, 8.570, 7.637, 5.632, 8.884, 11.082],
+            'Julio':     [8.067, 8.154, 8.086, 6.829, 5.302, 6.786, 9.329],
+            'Agosto':    [7.038, 7.992, 8.115, 7.495, 5.710, 7.907, 10.169],
+            'Septiembre':[9.417, 9.227, 9.118, 8.120, 6.035, 9.613, 11.541],
+            'Octubre':   [9.249, 9.180, 9.063, 8.385, 5.974, 8.763, 8.712],
+            'Noviembre': [9.562, 9.519, 9.508, 8.961, 6.735, 10.611, 11.845],
+            'Diciembre': [9.244, 9.089, 8.677, 8.355, 6.241, 9.412, 10.608]
+        }, index=["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"])
+
         st.dataframe(inter_arrival_df)
 
     st.subheader("5) Supuestos Económicos (euros o años)")
@@ -559,19 +577,20 @@ def main():
     else:
         st.info("Usando precios de compra por día y mes de ejemplo.")
         precio_dia_mes_df = pd.DataFrame({
-            "January":   [0.145, 0.144, 0.148, 0.152, 0.222, 0.189, 0.123],
-            "February":  [0.158, 0.161, 0.175, 0.198, 0.219, 0.185, 0.134],
-            "March":     [0.179, 0.179, 0.184, 0.202, 0.221, 0.162, 0.141],
-            "April":     [0.201, 0.198, 0.195, 0.217, 0.214, 0.174, 0.162],
-            "May":       [0.223, 0.225, 0.224, 0.243, 0.236, 0.193, 0.179],
-            "June":      [0.181, 0.176, 0.185, 0.200, 0.199, 0.167, 0.158],
-            "July":      [0.164, 0.165, 0.167, 0.172, 0.176, 0.153, 0.144],
-            "August":    [0.142, 0.143, 0.145, 0.151, 0.157, 0.135, 0.124],
-            "September": [0.132, 0.133, 0.134, 0.137, 0.140, 0.124, 0.113],
-            "October":   [0.153, 0.155, 0.156, 0.159, 0.161, 0.135, 0.122],
-            "November":  [0.172, 0.174, 0.176, 0.179, 0.181, 0.153, 0.131],
-            "December":  [0.193, 0.195, 0.197, 0.199, 0.202, 0.174, 0.147]
-    }, index=[0, 1, 2, 3, 4, 5, 6])
+            "Enero":     [0.145, 0.144, 0.148, 0.152, 0.222, 0.189, 0.123],
+            "Febrero":   [0.158, 0.161, 0.175, 0.198, 0.219, 0.185, 0.134],
+            "Marzo":     [0.179, 0.179, 0.184, 0.202, 0.221, 0.162, 0.141],
+            "Abril":     [0.201, 0.198, 0.195, 0.217, 0.214, 0.174, 0.162],
+            "Mayo":      [0.223, 0.225, 0.224, 0.243, 0.236, 0.193, 0.179],
+            "Junio":     [0.181, 0.176, 0.185, 0.200, 0.199, 0.167, 0.158],
+            "Julio":     [0.164, 0.165, 0.167, 0.172, 0.176, 0.153, 0.144],
+            "Agosto":    [0.142, 0.143, 0.145, 0.151, 0.157, 0.135, 0.124],
+            "Septiembre":[0.132, 0.133, 0.134, 0.137, 0.140, 0.124, 0.113],
+            "Octubre":   [0.153, 0.155, 0.156, 0.159, 0.161, 0.135, 0.122],
+            "Noviembre": [0.172, 0.174, 0.176, 0.179, 0.181, 0.153, 0.131],
+            "Diciembre": [0.193, 0.195, 0.197, 0.199, 0.202, 0.174, 0.147]
+    }, index=["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"])
+
     st.dataframe(precio_dia_mes_df)
 
     if st.button("Ejecutar Simulación"):
@@ -599,6 +618,5 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
 
