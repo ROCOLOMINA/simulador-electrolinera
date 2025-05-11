@@ -184,9 +184,9 @@ def car(env, name, electrolinera, stats, precio_dia_mes_df,
 
     available_stations = [
         s for s in electrolinera.stations
-        if s["queue_limit"] is None or
-            (len(s["resource"].queue) + s["resource"].count) < s["queue_limit"]
-]
+        if s["queue_limit"] is None or len(s["resource"].queue) < s["queue_limit"]
+    ]
+
 
     if not available_stations:
         stats["abandoned"] += 1
