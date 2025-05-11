@@ -101,6 +101,18 @@ class Electrolinera:
             for ctype in CHARGERS.keys()
         }
 
+        self.stats_by_charger_type = {
+        ctype: {
+            "queue_times": [],
+            "charging_times": [],
+            "queue_lengths": [],
+            "busy_time": 0.0,
+            "served": 0
+        }
+        for ctype in CHARGERS
+        }
+
+
         self.stations = []
         # Crear los cargadores
         for charger_type, config in CHARGERS.items():
@@ -184,10 +196,14 @@ def car(env, name, electrolinera, stats, precio_dia_mes_df,
     station = min(available_stations, key=lambda s: len(s["resource"].queue))
 
     with station["resource"].request() as req:
+        charger_type = station["type"]
         # 1) mido espera en cola
         wait_start = env.now
         yield req
         wait_time = env.now - wait_start
+        electrolinera.stats_by_charger_type[charger_type]["queue_times"].append(wait_time)
+        electrolinera.stats_by_charger_type[charger_type]["queue_lengths"].append(queue_length)
+
 
         # acumular totales
         electrolinera.charger_queue_times.append(wait_time)
@@ -200,7 +216,7 @@ def car(env, name, electrolinera, stats, precio_dia_mes_df,
         charging_time, energy = yield env.process(
             electrolinera.charge(name, station, car_type, frac_carga)
         )
-
+        electrolinera.stats_by_charger_type[charger_type]["charging_times"].append(charging_time)
         energy_by_car_type[car_type] += energy
 
 
@@ -221,6 +237,8 @@ def car(env, name, electrolinera, stats, precio_dia_mes_df,
 
         # estadísticas de ocupación y energía
         station["busy_time"] += (charge_end - charge_start)
+        electrolinera.stats_by_charger_type[charger_type]["busy_time"] += (charge_end - charge_start)
+        electrolinera.stats_by_charger_type[charger_type]["served"] += 1
         electrolinera.charging_times.append(charging_time)
         electrolinera.energy_by_type[station["type"]] += energy
 
@@ -281,6 +299,7 @@ def run_simulation_from_dfs(
     inter_arrival_parsed, MONTHS = parse_inter_arrival_df(inter_arrival_df)
 
     def run_simulation(replication):
+        resultados_dict = {}
         # Fijar semillas para reproducibilidad
         random.seed(42 + replication)
         np.random.seed(42 + replication)
@@ -427,65 +446,90 @@ def run_simulation_from_dfs(
         served_counts = {f"Coches atendidos tipo {tipo}": count for tipo, count in served_by_car_type.items()}
         abandoned_counts = {f"Coches que abandonan tipo {tipo}": count for tipo, count in abandoned_by_car_type.items()}
 
+        for charger_type, stats_ct in electrolinera.stats_by_charger_type.items():
+            prefix = f"{charger_type} -"
+            resultados_dict.update({
+                f"{prefix} Tiempo máximo en cola (min)": max(stats_ct["queue_times"], default=0),
+                f"{prefix} Longitud promedio de cola": (
+                    np.mean(stats_ct["queue_lengths"]) if stats_ct["queue_lengths"] else 0
+                ),
+                f"{prefix} Tiempo medio de carga (min)": (
+                    np.mean(stats_ct["charging_times"]) if stats_ct["charging_times"] else 0
+                ),
+                f"{prefix} Ocupación media (%)": (
+                    stats_ct["busy_time"] / (CHARGERS[charger_type]["count"] * SIM_TIME) * 100
+                    if SIM_TIME > 0 else 0
+                ),
+                f"{prefix} Coches atendidos/día": (
+                    stats_ct["served"] / days if days > 0 else 0
+                )
+            })
+
 
         # — DEVOLUCIÓN DE TODAS LAS MÉTRICAS —
-        return {
-            # Métricas originales
-            "Coches atendidos": stats["served"],
-            "Coches que abandonan sin servicio": stats["abandoned"],
-            "Tasa de abandono (%)": (
-                stats["abandoned"] / (stats["served"] + stats["abandoned"]) * 100
-                if (stats["served"] + stats["abandoned"]) > 0 else 0
-            ),
-            "Tiempo promedio en el sistema (min)": (
-                np.mean(stats["system_times"]) if stats["system_times"] else 0
-            ),
-            "Tiempo máximo en el sistema (min)": max(stats["system_times"], default=0),
-            "Tiempo mínimo en el sistema (min)": min(stats["system_times"], default=0),
-            "Tiempo promedio en cola de cargadores (min)": (
-                np.mean(electrolinera.charger_queue_times)
-                if electrolinera.charger_queue_times else 0
-            ),
-            "Tiempo máximo en cola de cargadores (min)": max(electrolinera.charger_queue_times, default=0),
-            "Tiempo mínimo en cola de cargadores (min)": min(electrolinera.charger_queue_times, default=0),
-            "Longitud promedio de la cola": (
-                np.mean(electrolinera.queue_lengths) if electrolinera.queue_lengths else 0
-            ),
-            "Longitud máxima de la cola": max(electrolinera.queue_lengths, default=0),
-            # Conteo por tipo de coche
-            **car_type_counts,
-            **served_counts,
-            **abandoned_counts,
+        resultados_dict = {
+        "Coches atendidos": stats["served"],
+        "Coches que abandonan sin servicio": stats["abandoned"],
+        "Tasa de abandono (%)": (
+            stats["abandoned"] / (stats["served"] + stats["abandoned"]) * 100
+            if (stats["served"] + stats["abandoned"]) > 0 else 0
+        ),
+        "Tiempo promedio en el sistema (min)": (
+            np.mean(stats["system_times"]) if stats["system_times"] else 0
+        ),
+        "Tiempo máximo en el sistema (min)": max(stats["system_times"], default=0),
+        "Tiempo promedio en cola de cargadores (min)": (
+            np.mean(electrolinera.charger_queue_times)
+            if electrolinera.charger_queue_times else 0
+        ),
+        "Tiempo máximo en cola de cargadores (min)": max(electrolinera.charger_queue_times, default=0),
+        "Longitud promedio de la cola": (
+            np.mean(electrolinera.queue_lengths) if electrolinera.queue_lengths else 0
+        ),
+        "Longitud máxima de la cola": max(electrolinera.queue_lengths, default=0),
+        **car_type_counts,
+        **served_counts,
+        **abandoned_counts,
+        "Tiempo medio de espera (min)": mean_wait,
+        "% Coches que esperan": pct_wait,
+        "Tiempo medio de carga (min)": mean_charge_time,
+        "Ocupación media cargadores (%)": utilization,
+        "Energía/cargador/hora de media (kWh)": energy_per_charger_per_hour,
+        "Coches atendidos/día": cars_per_day,
+        **{
+            f"Energía total {ctype} (kWh)": energy
+            for ctype, energy in electrolinera.energy_by_type.items()
+        },
+        "Ingresos anuales (€)": ingresos,
+        "Costes anuales (€)": costes_totales,
+        "Beneficio neto anual (€)": beneficio_neto,
+        "Rentabilidad sobre inversión (%)": rentabilidad,
+        **{f"Energía total coche {tipo} (kWh)": energia for tipo, energia in energy_by_car_type.items()},
+        **{f"Energía total {dias_semana[i]} (kWh)": energia for i, energia in energy_by_weekday.items()},
+        **{f"Energía total {meses[m - 1]} (kWh)": energia for m, energia in energy_by_month.items()},
+    }
 
-            # Métricas nuevas
-            "Tiempo medio de espera (min)": mean_wait,
-            "% Coches que esperan": pct_wait,
-            "Tiempo medio de carga (min)": mean_charge_time,
-            "Ocupación media cargadores (%)": utilization,
-            "Energía/cargador/hora (kWh)": energy_per_charger_per_hour,
-            "Coches atendidos/día": cars_per_day,
+        for charger_type, stats_ct in electrolinera.stats_by_charger_type.items():
+            prefix = f"{charger_type} -"
+            resultados_dict.update({
+                f"{prefix} Tiempo máximo en cola (min)": max(stats_ct["queue_times"], default=0),
+                f"{prefix} Longitud promedio de cola": (
+                    np.mean(stats_ct["queue_lengths"]) if stats_ct["queue_lengths"] else 0
+                ),
+                f"{prefix} Tiempo medio de carga (min)": (
+                    np.mean(stats_ct["charging_times"]) if stats_ct["charging_times"] else 0
+                ),
+                f"{prefix} Ocupación media (%)": (
+                    stats_ct["busy_time"] / (CHARGERS[charger_type]["count"] * SIM_TIME) * 100
+                    if SIM_TIME > 0 else 0
+                ),
+                f"{prefix} Coches atendidos/día": (
+                    stats_ct["served"] / days if days > 0 else 0
+                )
+            })
+        return resultados_dict
 
-            # Energía total por tipo de cargador
-            **{
-                f"Energía total {ctype} (kWh)": energy
-                for ctype, energy in electrolinera.energy_by_type.items()
-            },
 
-            # Métricas economia
-            "Ingresos anuales (€)": ingresos,
-            "Costes anuales (€)": costes_totales,
-            "Beneficio neto anual (€)": beneficio_neto,
-            "Rentabilidad sobre inversión (%)": rentabilidad,
-
-            # Energía total por tipo de coche
-            **{f"Energía total coche {tipo} (kWh)": energia for tipo, energia in energy_by_car_type.items()},
-            # Energía total por día de la semana (con nombres)
-            **{f"Energía total {dias_semana[i]} (kWh)": energia for i, energia in energy_by_weekday.items()},
-
-            # Energía total por mes (con nombres)
-            **{f"Energía total {meses[m - 1]} (kWh)": energia for m, energia in energy_by_month.items()},
-
-        }
 
     results = []
     for rep in range(NUM_REPLICATIONS):
