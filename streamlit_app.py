@@ -144,7 +144,9 @@ def get_inter_arrival_time(current_time, inter_arrival_df, MONTHS):
     weekday_name = DIAS_SEMANA[current_time.weekday()]   # Día en español
     return inter_arrival_df.loc[weekday_name, month]
 
-def car(env, name, electrolinera, stats, precio_dia_mes_df, energy_by_car_type, energy_by_weekday, energy_by_month, start_datetime):
+def car(env, name, electrolinera, stats, precio_dia_mes_df,
+        energy_by_car_type, energy_by_weekday, energy_by_month, start_datetime,
+        served_by_car_type, abandoned_by_car_type):
     """
     Proceso de cada coche:
       - Selecciona el tipo de coche según probabilidades.
@@ -160,6 +162,8 @@ def car(env, name, electrolinera, stats, precio_dia_mes_df, energy_by_car_type, 
         weights=[electrolinera.CAR_TYPES[key]["probabilidad"] for key in electrolinera.CAR_TYPES]
     )[0]
     electrolinera.CAR_TYPES[car_type]["count"] += 1
+    # Guardar el tipo en la variable stats
+    stats["car_type"] = car_type
 
     media_bateria = electrolinera.CAR_TYPES[car_type]["bateria_media"]
     desv_bateria = electrolinera.CAR_TYPES[car_type]["bateria_desviacion"]
@@ -172,8 +176,10 @@ def car(env, name, electrolinera, stats, precio_dia_mes_df, energy_by_car_type, 
     ]
     if not available_stations:
         stats["abandoned"] += 1
+        abandoned_by_car_type[car_type] += 1
         stats["system_times"].append(0)
         return
+
 
     station = min(available_stations, key=lambda s: len(s["resource"].queue))
 
@@ -198,6 +204,7 @@ def car(env, name, electrolinera, stats, precio_dia_mes_df, energy_by_car_type, 
         energy_by_car_type[car_type] += energy
 
 
+
         fecha = start_datetime + timedelta(minutes=env.now)
         mes_nombre = MESES[fecha.month - 1]              # "Enero", "Febrero", …
         dia_nombre = DIAS_SEMANA[fecha.weekday()]        # "Lunes", "Martes", …
@@ -219,14 +226,17 @@ def car(env, name, electrolinera, stats, precio_dia_mes_df, energy_by_car_type, 
 
     # Al terminar la carga, damos el coche por servido y registramos su tiempo total
     stats["served"] += 1
+    served_by_car_type[car_type] += 1
     stats["system_times"].append(charge_end - arrival_time)
 
 def car_generator(
     env, electrolinera, stats,
     inter_arrival_df, MONTHS,
     SIM_TIME, precio_dia_mes_df,
-    energy_by_car_type, energy_by_weekday, energy_by_month, start_datetime
+    energy_by_car_type, energy_by_weekday, energy_by_month, start_datetime,
+    served_by_car_type, abandoned_by_car_type
 ):
+
     """
     Genera coches de forma continua durante el tiempo de simulación.
     """
@@ -247,7 +257,9 @@ def car_generator(
                 energy_by_car_type,
                 energy_by_weekday,
                 energy_by_month,
-                start_datetime
+                start_datetime,
+                served_by_car_type,
+                abandoned_by_car_type
             )
         )
 
@@ -276,7 +288,6 @@ def run_simulation_from_dfs(
         # — SUPUESTOS ECONÓMICOS —
         economics = dict(zip(econ_params_df["variable"], econ_params_df["valor"]))
 
-        precio_compra = float(economics["precio_compra"])
         coste_mantenimiento_pct = float(economics["coste_mantenimiento_pct"])
         vida_util_cargador = float(economics["vida_util_cargador"])
         coste_explotacion_anual = float(economics["coste_explotacion_anual"])
@@ -297,6 +308,9 @@ def run_simulation_from_dfs(
 
         # Acumuladores detallados
         energy_by_car_type = {tipo: 0.0 for tipo in CAR_TYPES}
+        served_by_car_type = {tipo: 0 for tipo in CAR_TYPES}
+        abandoned_by_car_type = {tipo: 0 for tipo in CAR_TYPES}
+
         energy_by_weekday = {i: 0.0 for i in range(7)}       # 0=Lunes, 6=Domingo
         energy_by_month = {m: 0.0 for m in range(1, 13)}     # 1=Enero, ..., 12=Diciembre
 
@@ -318,9 +332,12 @@ def run_simulation_from_dfs(
             energy_by_car_type,
             energy_by_weekday,
             energy_by_month,
-            START_DATE  # nuevo argumento
+            START_DATE,
+            served_by_car_type,
+            abandoned_by_car_type
         )
     )
+
 
 
         # Ejecutar simulación
@@ -407,6 +424,9 @@ def run_simulation_from_dfs(
         meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
                  "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
 
+        served_counts = {f"Coches atendidos tipo {tipo}": count for tipo, count in served_by_car_type.items()}
+        abandoned_counts = {f"Coches que abandonan tipo {tipo}": count for tipo, count in abandoned_by_car_type.items()}
+
 
         # — DEVOLUCIÓN DE TODAS LAS MÉTRICAS —
         return {
@@ -434,6 +454,8 @@ def run_simulation_from_dfs(
             "Longitud máxima de la cola": max(electrolinera.queue_lengths, default=0),
             # Conteo por tipo de coche
             **car_type_counts,
+            **served_counts,
+            **abandoned_counts,
 
             # Métricas nuevas
             "Tiempo medio de espera (min)": mean_wait,
@@ -558,12 +580,12 @@ def main():
         st.info("Usando supuestos económicos de ejemplo.")
         econ_params_df = pd.DataFrame({
             "variable": [
-                "precio_compra", "coste_mantenimiento_pct",
+                "coste_mantenimiento_pct",
                 "vida_util_cargador", "coste_explotacion_anual",
                 "coste_fijo", "coste_variable"
             ],
             "valor": [
-                0.25, 0.07, 15, 50000,
+                0.07, 15, 50000,
                 20000, 300
             ]
         })
