@@ -34,15 +34,15 @@ def parse_configuration_df(config_df):
 
         # extraemos queue_limit solo si existe y no es NaN
         queue_limit = None
-        if "queue_limit" in config_df.columns and not pd.isna(row["queue_limit"]):
-            queue_limit = int(row["queue_limit"])
+        if "limite_cola" in config_df.columns and not pd.isna(row["limite_cola"]):
+            queue_limit = int(row["limite_cola"])
 
         # añadimos directamente
         chargers[tipo] = {
             "count": cantidad,
             "power": potencia,
             "queue_limit": queue_limit,
-            "precio_venta": float(row["precio_venta"]) if "precio_venta" in config_df.columns else 0.5
+            "precio_venta": float(row["precio_venta_euros/kWh"]) if "precio_venta_euros/kWh" in config_df.columns else 0.5
         }
 
     return chargers
@@ -310,10 +310,10 @@ def run_simulation_from_dfs(
         economics = dict(zip(econ_params_df["variable"], econ_params_df["valor"]))
 
         coste_mantenimiento_pct = float(economics["coste_mantenimiento_pct"])
-        vida_util_cargador = float(economics["vida_util_cargador"])
-        coste_explotacion_anual = float(economics["coste_explotacion_anual"])
-        coste_fijo = float(economics["coste_fijo"])
-        coste_variable = float(economics["coste_variable"])
+        vida_util_cargador = float(economics["vida_util_cargador_anos"])
+        coste_explotacion_anual = float(economics["coste_explotacion_anual_euros"])
+        coste_fijo = float(economics["coste_fijo_euros"])
+        coste_variable = float(economics["coste_variable_euros"])
 
         # Fórmula de coste de cargador en función de su potencia
         def calcular_coste_cargador(potencia_kW):
@@ -448,28 +448,9 @@ def run_simulation_from_dfs(
         served_counts = {f"Coches atendidos tipo {tipo}": count for tipo, count in served_by_car_type.items()}
         abandoned_counts = {f"Coches que abandonan tipo {tipo}": count for tipo, count in abandoned_by_car_type.items()}
 
-        for charger_type, stats_ct in electrolinera.stats_by_charger_type.items():
-            prefix = f"{charger_type} -"
-            resultados_dict.update({
-                f"{prefix} Tiempo máximo en cola (min)": max(stats_ct["queue_times"], default=0),
-                f"{prefix} Longitud promedio de cola": (
-                    np.mean(stats_ct["queue_lengths"]) if stats_ct["queue_lengths"] else 0
-                ),
-                f"{prefix} Tiempo medio de carga (min)": (
-                    np.mean(stats_ct["charging_times"]) if stats_ct["charging_times"] else 0
-                ),
-                f"{prefix} Ocupación media (%)": (
-                    stats_ct["busy_time"] / (CHARGERS[charger_type]["count"] * SIM_TIME) * 100
-                    if SIM_TIME > 0 else 0
-                ),
-                f"{prefix} Coches atendidos/día": (
-                    stats_ct["served"] / days if days > 0 else 0
-                )
-            })
-
 
         # — DEVOLUCIÓN DE TODAS LAS MÉTRICAS —
-        resultados_dict = {
+        resultados_dict.update({
         "Coches atendidos": stats["served"],
         "Coches que abandonan sin servicio": stats["abandoned"],
         "Tasa de abandono (%)": (
@@ -509,15 +490,14 @@ def run_simulation_from_dfs(
         **{f"Energía total coche {tipo} (kWh)": energia for tipo, energia in energy_by_car_type.items()},
         **{f"Energía total {dias_semana[i]} (kWh)": energia for i, energia in energy_by_weekday.items()},
         **{f"Energía total {meses[m - 1]} (kWh)": energia for m, energia in energy_by_month.items()},
-    }
+    })
+
+        metricas_por_cargador = {}
 
         for charger_type, stats_ct in electrolinera.stats_by_charger_type.items():
             prefix = f"{charger_type} -"
             resultados_dict.update({
                 f"{prefix} Tiempo máximo en cola (min)": max(stats_ct["queue_times"], default=0),
-                f"{prefix} Longitud promedio de cola": (
-                    np.mean(stats_ct["queue_lengths"]) if stats_ct["queue_lengths"] else 0
-                ),
                 f"{prefix} Tiempo medio de carga (min)": (
                     np.mean(stats_ct["charging_times"]) if stats_ct["charging_times"] else 0
                 ),
@@ -529,6 +509,9 @@ def run_simulation_from_dfs(
                     stats_ct["served"] / days if days > 0 else 0
                 )
             })
+
+        resultados_dict.update(metricas_por_cargador)
+
         return resultados_dict
 
 
@@ -547,7 +530,7 @@ def main():
     st.title("Simulador de Electrolinera")
     st.write("Bienvenido/a a la aplicación de simulación. Sube tus CSV o utiliza los datos de ejemplo.")
 
-    st.subheader("1) Configuración de Cargadores (precio en euros)")
+    st.subheader("1) Configuración de Cargadores")
     config_file = st.file_uploader("Sube 'configuracion_cargadores.csv' ", type=["csv"])
     if config_file is not None:
         config_df = pd.read_csv(config_file)
@@ -558,8 +541,8 @@ def main():
             "tipo_cargador": ["100kW", "350kW"],
             "potencia_kW": [100, 350],
             "cantidad": [1, 1],
-            "queue_limit": [1, 1],
-            "precio_venta": [0.45,0.55]
+            "limite_cola": [1, 1],
+            "precio_venta_euros/kWh": [0.45,0.55]
         })
         st.dataframe(config_df)
 
@@ -592,7 +575,7 @@ def main():
         })
         st.dataframe(params_df)
 
-    st.subheader("4) Tiempos de Llegada (tiempo_entre_llegadas.csv) (minutos entre llegada de coches)")
+    st.subheader("4) Tiempo entre la llegada de dos coches consecutivos en minutos (tiempo_entre_llegadas.csv)")
     inter_file = st.file_uploader("Sube 'tiempo_entre_llegadas.csv'", type=["csv"])
 
     if inter_file is not None:
@@ -617,7 +600,7 @@ def main():
 
         st.dataframe(inter_arrival_df)
 
-    st.subheader("5) Supuestos Económicos (euros o años)")
+    st.subheader("5) Supuestos Económicos")
     econ_file = st.file_uploader("Sube 'parametros_economicos.csv'", type=["csv"])
     if econ_file is not None:
         econ_params_df = pd.read_csv(econ_file)
@@ -627,8 +610,8 @@ def main():
         econ_params_df = pd.DataFrame({
             "variable": [
                 "coste_mantenimiento_pct",
-                "vida_util_cargador", "coste_explotacion_anual",
-                "coste_fijo", "coste_variable"
+                "vida_util_cargador_anos", "coste_explotacion_anual_euros",
+                "coste_fijo_euros", "coste_variable_euros"
             ],
             "valor": [
                 0.07, 15, 50000,
