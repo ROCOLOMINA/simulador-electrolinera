@@ -303,8 +303,8 @@ def run_simulation_from_dfs(
     def run_simulation(replication):
         resultados_dict = {}
         # Fijar semillas para reproducibilidad
-        random.seed(42 + replication)
-        np.random.seed(42 + replication)
+        random.seed(1 + replication)
+        np.random.seed(1 + replication)
 
         # — SUPUESTOS ECONÓMICOS —
         economics = dict(zip(econ_params_df["variable"], econ_params_df["valor"]))
