@@ -227,9 +227,9 @@ def car(env, name, electrolinera, stats, precio_dia_mes_df,
         mes_nombre = MESES[fecha.month - 1]              # "Enero", "Febrero", …
         dia_nombre = DIAS_SEMANA[fecha.weekday()]        # "Lunes", "Martes", …
 
-        precio = precio_dia_mes_df.loc[dia_nombre, mes_nombre]
+        precio_compra = precio_dia_mes_df.loc[dia_nombre, mes_nombre]
 
-        stats["coste_energia"] += energy * precio
+        stats["coste_energia"] += energy * precio_compra
         energy_by_weekday[fecha.weekday()] += energy
 
         # si tus claves van de 1 a 12:
@@ -312,8 +312,15 @@ def run_simulation_from_dfs(
         coste_mantenimiento_pct = float(economics["coste_mantenimiento_pct"])
         vida_util_cargador = float(economics["vida_util_cargador_anos"])
         coste_explotacion_anual = float(economics["coste_explotacion_anual_euros"])
-        coste_fijo = float(economics["coste_fijo_euros"])
-        coste_variable = float(economics["coste_variable_euros"])
+        coste_fijo = float(economics["coste_fijo_inicial_por_cargador_euros"])
+        coste_variable = float(economics["coste_variable_por_cargador_euros"])
+        precio_potencia_anual_kW = float(economics.get("precio_potencia_anual_kW", 0))
+
+        # Potencia total instalada (suma de potencias de todos los cargadores)
+        potencia_total_kW = sum(cfg["count"] * cfg["power"] for cfg in CHARGERS.values())
+
+        # Coste anual de la potencia contratada
+        coste_potencia = potencia_total_kW * precio_potencia_anual_kW
 
         # Fórmula de coste de cargador en función de su potencia
         def calcular_coste_cargador(potencia_kW):
@@ -424,7 +431,7 @@ def run_simulation_from_dfs(
         )
 
         # 5) Costes totales
-        costes_totales = coste_energia + coste_mantenimiento + coste_amortizacion + coste_explotacion_anual
+        costes_totales = coste_energia + coste_mantenimiento + coste_amortizacion + coste_explotacion_anual + coste_potencia
 
         # 6) Beneficio neto
         beneficio_neto = ingresos - costes_totales
@@ -611,11 +618,11 @@ def main():
             "variable": [
                 "coste_mantenimiento_pct",
                 "vida_util_cargador_anos", "coste_explotacion_anual_euros",
-                "coste_fijo_euros", "coste_variable_euros"
+                "coste_fijo_inicial_por_cargador_euros", "coste_variable_por_cargador_euros", "precio_potencia_anual_kW"
             ],
             "valor": [
                 0.07, 15, 50000,
-                20000, 300
+                20000, 300, 50
             ]
         })
     st.dataframe(econ_params_df)
