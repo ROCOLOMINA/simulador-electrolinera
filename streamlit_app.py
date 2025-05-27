@@ -173,6 +173,7 @@ def car(env, name, electrolinera, stats, precio_dia_mes_df,
         list(electrolinera.CAR_TYPES.keys()),
         weights=[electrolinera.CAR_TYPES[key]["probabilidad"] for key in electrolinera.CAR_TYPES]
     )[0]
+
     electrolinera.CAR_TYPES[car_type]["count"] += 1
     # Guardar el tipo en la variable stats
     stats["car_type"] = car_type
@@ -182,17 +183,30 @@ def car(env, name, electrolinera, stats, precio_dia_mes_df,
     frac_carga = np.random.normal(media_bateria, desv_bateria)
     frac_carga = np.clip(frac_carga, 0.01, 1.0)
 
+    car_capacity = float(car_type[:-3])
+
+    if car_capacity < 70:
+        # Solo se consideran cargadores de 100kW o menos
+        candidate_stations = [
+            s for s in electrolinera.stations
+            if s["power"] <= 100
+        ]
+    else:
+        # Cualquier cargador vale
+        candidate_stations = electrolinera.stations
+
+    # Verificar colas en los cargadores candidatos
     available_stations = [
-        s for s in electrolinera.stations
+        s for s in candidate_stations
         if s["queue_limit"] is None or len(s["resource"].queue) < s["queue_limit"]
     ]
-
 
     if not available_stations:
         stats["abandoned"] += 1
         abandoned_by_car_type[car_type] += 1
         stats["system_times"].append(0)
         return
+
 
 
     station = min(available_stations, key=lambda s: len(s["resource"].queue))
@@ -218,6 +232,7 @@ def car(env, name, electrolinera, stats, precio_dia_mes_df,
         charging_time, energy = yield env.process(
             electrolinera.charge(name, station, car_type, frac_carga)
         )
+
         electrolinera.stats_by_charger_type[charger_type]["charging_times"].append(charging_time)
         energy_by_car_type[car_type] += energy
 
@@ -480,7 +495,6 @@ def run_simulation_from_dfs(
         **car_type_counts,
         **served_counts,
         **abandoned_counts,
-        "Tiempo medio de espera (min)": mean_wait,
         "% Coches que esperan": pct_wait,
         "Tiempo medio de carga (min)": mean_charge_time,
         "Ocupación media cargadores (%)": utilization,
@@ -545,11 +559,11 @@ def main():
     else:
         st.info("Usando configuración de ejemplo.")
         config_df = pd.DataFrame({
-            "tipo_cargador": ["100kW", "350kW"],
-            "potencia_kW": [100, 350],
+            "tipo_cargador": ["100kW", "200kW"],
+            "potencia_kW": [100, 200],
             "cantidad": [1, 1],
             "limite_cola": [1, 1],
-            "precio_venta_euros/kWh": [0.45,0.55]
+            "precio_venta_euros/kWh": [0.35, 0.4]
         })
         st.dataframe(config_df)
 
@@ -563,7 +577,7 @@ def main():
         car_types_df = pd.DataFrame({
             "tipo_coche": ["120kWh", "70kWh", "40kWh"],
             "probabilidad": [0.2, 0.3, 0.5],
-            "bateria_media": [0.6, 0.6, 0.6],
+            "bateria_media": [0.8, 0.8, 0.8],
             "bateria_desviacion": [0.2, 0.2, 0.2]
         })
         st.dataframe(car_types_df)
@@ -590,22 +604,24 @@ def main():
         st.dataframe(inter_arrival_df)
     else:
         st.info("Usando tiempos de llegada de ejemplo.")
-        inter_arrival_df = pd.DataFrame({
-            'Enero':     [10.015, 10.009, 9.925, 10.442, 7.793, 12.118, 14.094],
-            'Febrero':   [8.648, 9.637, 9.383, 8.274, 6.288, 10.572, 12.811],
-            'Marzo':     [10.657, 10.127, 10.110, 9.292, 6.941, 11.133, 13.279],
-            'Abril':     [8.498, 8.365, 7.140, 6.828, 6.645, 10.373, 10.516],
-            'Mayo':      [9.786, 9.091, 9.034, 8.031, 5.786, 9.334, 11.812],
-            'Junio':     [8.650, 8.987, 8.570, 7.637, 5.632, 8.884, 11.082],
-            'Julio':     [8.067, 8.154, 8.086, 6.829, 5.302, 6.786, 9.329],
-            'Agosto':    [7.038, 7.992, 8.115, 7.495, 5.710, 7.907, 10.169],
-            'Septiembre':[9.417, 9.227, 9.118, 8.120, 6.035, 9.613, 11.541],
-            'Octubre':   [9.249, 9.180, 9.063, 8.385, 5.974, 8.763, 8.712],
-            'Noviembre': [9.562, 9.519, 9.508, 8.961, 6.735, 10.611, 11.845],
-            'Diciembre': [9.244, 9.089, 8.677, 8.355, 6.241, 9.412, 10.608]
-        }, index=["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"])
+    inter_arrival_df = pd.DataFrame({
+        'Enero':     [38.91253718, 38.89786902, 38.56352718, 40.57824997, 30.28524706, 47.08515923, 54.75541447],
+        'Febrero':   [33.60159221, 37.44212252, 36.46307055, 32.14656999, 24.43452499, 41.0743448, 49.79206091],
+        'Marzo':     [41.40633005, 39.35778498, 39.2871439, 36.10042619, 26.96984758, 43.25349866, 51.59155972],
+        'Abril':     [33.02246629, 32.50386661, 27.74364064, 26.52906668, 25.82067659, 40.30428678, 40.85827409],
+        'Mayo':      [38.01954985, 35.32538281, 35.10051157, 31.20770015, 22.48578719, 36.26718018, 45.90032584],
+        'Junio':     [33.61410153, 34.91557558, 33.29799602, 29.67314742, 21.88623887, 34.51681692, 43.05498168],
+        'Julio':     [31.34719558, 31.68545983, 31.42219539, 26.53393923, 20.60395424, 26.36734542, 36.25079934],
+        'Agosto':    [27.34971897, 31.05207754, 31.53192892, 29.12047683, 22.18741331, 30.72059829, 39.51063492],
+        'Septiembre':[36.59237222, 35.85493039, 35.42586698, 31.55396766, 23.45238402, 37.34919481, 44.84314798],
+        'Octubre':   [35.93877445, 35.66374186, 35.21172993, 32.5874505, 23.21570443, 34.05305618, 33.8519743],
+        'Noviembre': [37.15706933, 36.99152085, 36.94422196, 34.8196398, 26.16865658, 41.2267238, 46.02315563],
+        'Diciembre': [35.92268886, 35.31674706, 33.71136546, 32.46588286, 24.25158394, 36.56828976, 41.22201836]
+    }, index=["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"])
 
-        st.dataframe(inter_arrival_df)
+
+    st.dataframe(inter_arrival_df)
+
 
     st.subheader("5) Supuestos Económicos")
     econ_file = st.file_uploader("Sube 'parametros_economicos.csv'", type=["csv"])
