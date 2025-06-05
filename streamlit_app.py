@@ -636,7 +636,7 @@ def main():
             "variable": [
                 "coste_mantenimiento_pct",
                 "vida_util_cargador_anos", "coste_explotacion_anual_euros",
-                "coste_fijo_inicial_por_cargador_euros", "coste_variable_por_cargador_euros", "precio_potencia_anual_kW"
+                "inversion_fija_por_cargador_euros", "inversion_variable_cargador_euros/kW", "precio_potencia_anual_kW"
             ],
             "valor": [
                 0.07, 15, 50000,
