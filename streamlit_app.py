@@ -327,9 +327,10 @@ def run_simulation_from_dfs(
         coste_mantenimiento_pct = float(economics["coste_mantenimiento_pct"])
         vida_util_cargador = float(economics["vida_util_cargador_anos"])
         coste_explotacion_anual = float(economics["coste_explotacion_anual_euros"])
-        coste_fijo = float(economics["coste_fijo_inicial_por_cargador_euros"])
-        coste_variable = float(economics["coste_variable_por_cargador_euros"])
-        precio_potencia_anual_kW = float(economics.get("precio_potencia_anual_kW", 0))
+        coste_fijo = float(economics["inversion_fija_por_cargador_euros"])
+        coste_variable = float(economics["inversion_variable_cargador_euros/kW"])
+        precio_potencia_anual_kW = float(economics.get("precio_potencia_anual_euros/kW", 0))
+
 
         # Potencia total instalada (suma de potencias de todos los cargadores)
         potencia_total_kW = sum(cfg["count"] * cfg["power"] for cfg in CHARGERS.values())
@@ -693,7 +694,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
 
 
