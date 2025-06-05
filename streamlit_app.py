@@ -50,12 +50,12 @@ def parse_configuration_df(config_df):
 def parse_car_types_df(car_types_df):
     """
     A partir de un DataFrame con columnas:
-      tipo_coche, probabilidad, bateria_media, bateria_desviacion
+      tipo_VE, probabilidad, bateria_media, bateria_desviacion
     Devuelve un dict CAR_TYPES.
     """
     car_types = {}
     for _, row in car_types_df.iterrows():
-        car_types[row["tipo_coche"]] = {
+        car_types[row["tipo_VE"]] = {
             "probabilidad": row["probabilidad"],
             "bateria_media": row["bateria_media"],
             "bateria_desviacion": row["bateria_desviacion"],
@@ -467,14 +467,14 @@ def run_simulation_from_dfs(
         meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
                  "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
 
-        served_counts = {f"Coches atendidos tipo {tipo}": count for tipo, count in served_by_car_type.items()}
-        abandoned_counts = {f"Coches que abandonan tipo {tipo}": count for tipo, count in abandoned_by_car_type.items()}
+        served_counts = {f"VE atendidos tipo {tipo}": count for tipo, count in served_by_car_type.items()}
+        abandoned_counts = {f"VE que abandonan tipo {tipo}": count for tipo, count in abandoned_by_car_type.items()}
 
 
         # — DEVOLUCIÓN DE TODAS LAS MÉTRICAS —
         resultados_dict.update({
-        "Coches atendidos": stats["served"],
-        "Coches que abandonan sin servicio": stats["abandoned"],
+        "VE atendidos": stats["served"],
+        "VE que abandonan sin servicio": stats["abandoned"],
         "Tasa de abandono (%)": (
             stats["abandoned"] / (stats["served"] + stats["abandoned"]) * 100
             if (stats["served"] + stats["abandoned"]) > 0 else 0
@@ -495,22 +495,23 @@ def run_simulation_from_dfs(
         **car_type_counts,
         **served_counts,
         **abandoned_counts,
-        "% Coches que esperan": pct_wait,
+        "% VE que esperan": pct_wait,
         "Tiempo medio de carga (min)": mean_charge_time,
         "Ocupación media cargadores (%)": utilization,
         "Energía/cargador/hora de media (kWh)": energy_per_charger_per_hour,
-        "Coches atendidos/día": cars_per_day,
+        "VE atendidos/día": cars_per_day,
         **{
-            f"Energía total {ctype} (kWh)": energy
+            f"Energía total {ctype} (MWh)": energy / 1_000
             for ctype, energy in electrolinera.energy_by_type.items()
         },
         "Ingresos anuales (€)": ingresos,
         "Costes anuales (€)": costes_totales,
         "Beneficio neto anual (€)": beneficio_neto,
         "Rentabilidad sobre inversión (%)": rentabilidad,
-        **{f"Energía total coche {tipo} (kWh)": energia for tipo, energia in energy_by_car_type.items()},
-        **{f"Energía total {dias_semana[i]} (kWh)": energia for i, energia in energy_by_weekday.items()},
-        **{f"Energía total {meses[m - 1]} (kWh)": energia for m, energia in energy_by_month.items()},
+        **{f"Energía total VE {tipo} (MWh)": energia / 1_000 for tipo, energia in energy_by_car_type.items()},
+        **{f"Energía total {dias_semana[i]} (MWh)": energia / 1_000 for i, energia in energy_by_weekday.items()},
+        **{f"Energía total {meses[m - 1]} (MWh)": energia / 1_000 for m, energia in energy_by_month.items()},
+
     })
 
         metricas_por_cargador = {}
@@ -526,7 +527,7 @@ def run_simulation_from_dfs(
                     stats_ct["busy_time"] / (CHARGERS[charger_type]["count"] * SIM_TIME) * 100
                     if SIM_TIME > 0 else 0
                 ),
-                f"{prefix} Coches atendidos/día": (
+                f"{prefix} VE atendidos/día": (
                     stats_ct["served"] / days if days > 0 else 0
                 )
             })
@@ -567,15 +568,15 @@ def main():
         })
         st.dataframe(config_df)
 
-    st.subheader("2) Tipos de Coches")
-    cars_file = st.file_uploader("Sube 'tipos_coches.csv'", type=["csv"])
+    st.subheader("2) Tipos de VE")
+    cars_file = st.file_uploader("Sube 'tipos_VE.csv'", type=["csv"])
     if cars_file is not None:
         car_types_df = pd.read_csv(cars_file)
         st.dataframe(car_types_df)
     else:
-        st.info("Usando tipos de coches de ejemplo.")
+        st.info("Usando tipos de VE de ejemplo.")
         car_types_df = pd.DataFrame({
-            "tipo_coche": ["120kWh", "70kWh", "40kWh"],
+            "tipo_VE": ["120kWh", "70kWh", "40kWh"],
             "probabilidad": [0.2, 0.3, 0.5],
             "bateria_media": [0.8, 0.8, 0.8],
             "bateria_desviacion": [0.2, 0.2, 0.2]
@@ -596,7 +597,7 @@ def main():
         })
         st.dataframe(params_df)
 
-    st.subheader("4) Tiempo entre la llegada de dos coches consecutivos en minutos (tiempo_entre_llegadas.csv)")
+    st.subheader("4) Tiempo entre la llegada de dos VE consecutivos en minutos (tiempo_entre_llegadas.csv)")
     inter_file = st.file_uploader("Sube 'tiempo_entre_llegadas.csv'", type=["csv"])
 
     if inter_file is not None:
